@@ -251,20 +251,33 @@
       } catch (err) { toast(err.message); }
     }
 
-    async function save() {
+    let saving = null;
+    /** Save the open doc. Autosave passes quiet: a failure shows in the status, without a toast. */
+    async function save({ quiet = false } = {}) {
       if (!current) return;
-      const content = editor.value;
+      if (saving) await saving;  // one save at a time
+      const path = current, content = editor.value;
       setStatus('Saving…');
-      try {
-        const res = await api('/admin/api/docs/' + current, jsonOpts('PUT', { content }));
-        savedContent = content; updateDirty();
-        document.title = `${res.title} · Editor`;
-        const label = $('tree').querySelector(`.row[data-path="${CSS.escape(current)}"] .label-text`);
-        if (label) label.textContent = res.title;
-      } catch (err) { setStatus('Save failed', 'error'); toast(err.message); }
+      saving = (async () => {
+        try {
+          const res = await api('/admin/api/docs/' + path, jsonOpts('PUT', { content }));
+          if (current !== path) return;  // switched docs while it was saving
+          savedContent = content; updateDirty();
+          document.title = `${res.title} · Editor`;
+          const label = $('tree').querySelector(`.row[data-path="${CSS.escape(path)}"] .label-text`);
+          if (label) label.textContent = res.title;
+        } catch (err) {
+          if (current !== path) return;
+          setStatus('Save failed', 'error');
+          if (!quiet) toast(err.message);
+        }
+      })();
+      try { await saving; } finally { saving = null; }
     }
 
-    $('save').onclick = save;
+    $('save').onclick = () => save();
+    // Autosave: every 30 seconds, save the open doc if it has unsaved changes.
+    setInterval(() => { if (isDirty() && !saving) save({ quiet: true }); }, 30_000);
     $('doc-more').onclick = e => showMenu(e.currentTarget, [
       { label: 'Copy link', icon: 'link', action: () => copyLink(current) },
       { label: 'Rename…', icon: 'edit', action: () => renameDoc(current) },
