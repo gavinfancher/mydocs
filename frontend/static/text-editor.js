@@ -63,6 +63,53 @@ function createTextEditor(parent, { placeholder = '' } = {}) {
     },
   });
 
+  // ---------- backtick pairing ----------
+  // ` types `|`, a second ` makes ``|``, and a third at the start of a line opens a code block:
+  // ```|  with the closing ``` on the next line. Typing ` just before a closing tick steps over it.
+  const ticksBefore = (doc, pos) => { let n = 0; while (pos - n > 0 && doc.sliceString(pos - n - 1, pos - n) === '`') n++; return n; };
+  const ticksAfter = (doc, pos) => { let n = 0; while (pos + n < doc.length && doc.sliceString(pos + n, pos + n + 1) === '`') n++; return n; };
+
+  const backtickPairing = CM.EditorView.inputHandler.of((view, from, to, text) => {
+    if (text !== '`' || view.composing) return false;
+    const { state } = view, sel = state.selection.main;
+    if (sel.from !== from || sel.to !== to) return false;
+    const doc = state.doc;
+    if (from !== to) {  // wrap the selection in ticks
+      view.dispatch({ changes: [{ from, insert: '`' }, { from: to, insert: '`' }],
+        selection: { anchor: from + 1, head: to + 1 }, userEvent: 'input.type' });
+      return true;
+    }
+    const before = ticksBefore(doc, from), after = ticksAfter(doc, from);
+    const line = doc.lineAt(from);
+    const lineStart = /^\s*$/.test(doc.sliceString(line.from, from - before));
+    const lineEnd = from + after === line.to;
+    let changes, anchor;
+    if (before === 2 && after === 2 && lineStart && lineEnd) {
+      const indent = doc.sliceString(line.from, from - before);
+      changes = { from, to: from + after, insert: '`\n' + indent + '```' };
+      anchor = from + 1;
+    } else if (before === 1 && after === 1) {
+      changes = { from, insert: '``' }; anchor = from + 1;
+    } else if (after > 0) {
+      anchor = from + 1;  // step over the closing tick
+    } else if (before === 0 && !/\w/.test(doc.sliceString(from, from + 1))) {
+      changes = { from, insert: '``' }; anchor = from + 1;
+    } else return false;
+    view.dispatch({ changes, selection: { anchor }, scrollIntoView: true, userEvent: 'input.type' });
+    return true;
+  });
+
+  // Backspace inside an empty pair (`|` or ``|``) removes both halves.
+  const deletePair = view => {
+    const { state } = view, sel = state.selection.main;
+    if (!sel.empty) return false;
+    const doc = state.doc, pos = sel.from;
+    const before = ticksBefore(doc, pos), after = ticksAfter(doc, pos);
+    if (before !== after || before < 1 || before > 2) return false;
+    view.dispatch({ changes: { from: pos - 1, to: pos + 1 }, userEvent: 'delete.backward' });
+    return true;
+  };
+
   const t = CM.tags;
   const highlight = CM.HighlightStyle.define([
     { tag: t.heading, fontWeight: '700' },
@@ -79,7 +126,8 @@ function createTextEditor(parent, { placeholder = '' } = {}) {
   const extensions = [
     CM.history(),
     CM.search({ top: true }),
-    CM.keymap.of([...CM.searchKeymap, ...CM.historyKeymap, ...CM.defaultKeymap]),
+    backtickPairing,
+    CM.keymap.of([{ key: 'Backspace', run: deletePair }, ...CM.searchKeymap, ...CM.historyKeymap, ...CM.defaultKeymap]),
     CM.markdown({ base: CM.markdownLanguage, addKeymap: false }),
     CM.syntaxHighlighting(highlight),
     CM.EditorView.lineWrapping,
